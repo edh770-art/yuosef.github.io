@@ -1,0 +1,586 @@
+import { useState, useEffect, useCallback } from "react";
+
+// ─── Persistent Storage Helpers ───────────────────────────────────────────────
+const store = {
+  async get(key) {
+    try { const r = await window.storage.get(key, false); return r ? JSON.parse(r.value) : null; } catch { return null; }
+  },
+  async set(key, val) {
+    try { await window.storage.set(key, JSON.stringify(val), false); } catch {}
+  },
+  async getShared(key) {
+    try { const r = await window.storage.get(key, true); return r ? JSON.parse(r.value) : null; } catch { return null; }
+  },
+  async setShared(key, val) {
+    try { await window.storage.set(key, JSON.stringify(val), true); } catch {}
+  },
+};
+
+// ─── Default Data ──────────────────────────────────────────────────────────────
+const DEFAULT_TASKS = [
+  { id: 1, text: "שתה 8 כוסות מים 💧" },
+  { id: 2, text: "10 דקות תנועה גופנית 🏃" },
+  { id: 3, text: "קרא 5 עמודים מספר 📖" },
+  { id: 4, text: "רשום 3 דברים שאתה אסיר תודה עליהם 🙏" },
+];
+
+const DEFAULT_ENCOURAGEMENT = [
+  "עשית את זה! יום מדהים! 🎉",
+  "אתה אלוף אמיתי! המשך כך! 🏆",
+  "כל צעד קטן מוביל למקום גדול! ⭐",
+  "היום הצלחת — מחר תצליח שוב! 🚀",
+];
+
+// ─── Token Logic ───────────────────────────────────────────────────────────────
+function getTokenFromUrl() {
+  const p = new URLSearchParams(window.location.search);
+  return p.get("token");
+}
+
+const VALID_TOKEN = "daily2025";
+const ADMIN_TOKEN = "admin2025";
+
+// ─── App Shell ────────────────────────────────────────────────────────────────
+export default function App() {
+  const token = getTokenFromUrl();
+  const [view, setView] = useState("loading");
+  const [user, setUser] = useState(null);
+  const [tasks, setTasks] = useState(DEFAULT_TASKS);
+  const [encouragements, setEncouragements] = useState(DEFAULT_ENCOURAGEMENT);
+  const [completed, setCompleted] = useState({});
+  const [showEncourage, setShowEncourage] = useState(false);
+  const [activityLog, setActivityLog] = useState([]);
+
+  // load shared config
+  useEffect(() => {
+    async function init() {
+      const savedTasks = await store.getShared("app:tasks");
+      if (savedTasks) setTasks(savedTasks);
+      const savedEnc = await store.getShared("app:encouragements");
+      if (savedEnc) setEncouragements(savedEnc);
+      const log = await store.getShared("app:activity");
+      if (log) setActivityLog(log);
+
+      if (!token) { setView("blocked"); return; }
+      if (token === ADMIN_TOKEN) { setView("admin"); return; }
+      if (token !== VALID_TOKEN) { setView("blocked"); return; }
+
+      const savedUser = await store.get("user:profile");
+      if (savedUser) {
+        setUser(savedUser);
+        const today = new Date().toDateString();
+        const savedCompleted = await store.get(`completed:${today}`);
+        if (savedCompleted) setCompleted(savedCompleted);
+        setView("tasks");
+      } else {
+        setView("register");
+      }
+    }
+    init();
+  }, []);
+
+  const handleRegister = async (name) => {
+    const u = { name, joined: new Date().toISOString() };
+    await store.set("user:profile", u);
+    setUser(u);
+
+    const log = [...activityLog, { type: "register", name, date: new Date().toISOString() }];
+    setActivityLog(log);
+    await store.setShared("app:activity", log);
+
+    setView("tasks");
+  };
+
+  const handleToggle = async (id) => {
+    const today = new Date().toDateString();
+    const newCompleted = { ...completed, [id]: !completed[id] };
+    setCompleted(newCompleted);
+    await store.set(`completed:${today}`, newCompleted);
+
+    const allDone = tasks.every(t => newCompleted[t.id]);
+    if (allDone) {
+      const log = [...activityLog, { type: "completed", name: user?.name, date: new Date().toISOString() }];
+      setActivityLog(log);
+      await store.setShared("app:activity", log);
+      setShowEncourage(true);
+    }
+  };
+
+  if (view === "loading") return <Screen><Spinner /></Screen>;
+  if (view === "blocked") return <Blocked />;
+  if (view === "register") return <Register onRegister={handleRegister} />;
+  if (view === "admin") return (
+    <Admin
+      tasks={tasks} setTasks={setTasks}
+      encouragements={encouragements} setEncouragements={setEncouragements}
+      activityLog={activityLog}
+      onSave={async (t, e) => {
+        await store.setShared("app:tasks", t);
+        await store.setShared("app:encouragements", e);
+      }}
+    />
+  );
+  if (showEncourage) return (
+    <Encourage
+      message={encouragements[Math.floor(Math.random() * encouragements.length)]}
+      onClose={() => setShowEncourage(false)}
+    />
+  );
+  return (
+    <Tasks
+      user={user} tasks={tasks}
+      completed={completed} onToggle={handleToggle}
+    />
+  );
+}
+
+// ─── Screens ──────────────────────────────────────────────────────────────────
+function Screen({ children }) {
+  return (
+    <div style={{
+      minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
+      background: "linear-gradient(135deg, #0f0c29, #302b63, #24243e)",
+      fontFamily: "'Segoe UI', Tahoma, sans-serif",
+    }}>
+      {children}
+    </div>
+  );
+}
+
+function Spinner() {
+  return (
+    <div style={{
+      width: 48, height: 48, border: "4px solid rgba(255,255,255,0.2)",
+      borderTop: "4px solid #a78bfa", borderRadius: "50%",
+      animation: "spin 0.8s linear infinite",
+    }} />
+  );
+}
+
+function Blocked() {
+  return (
+    <Screen>
+      <div style={{
+        textAlign: "center", color: "#fff", padding: 40,
+        background: "rgba(255,255,255,0.05)", borderRadius: 24,
+        border: "1px solid rgba(255,255,255,0.1)", maxWidth: 360,
+      }}>
+        <div style={{ fontSize: 64, marginBottom: 16 }}>🔒</div>
+        <h2 style={{ margin: "0 0 12px", fontSize: 22, fontWeight: 700 }}>גישה חסומה</h2>
+        <p style={{ color: "rgba(255,255,255,0.6)", lineHeight: 1.6, margin: 0 }}>
+          לאתר זה ניתן לגשת רק דרך קישור מיוחד.
+          <br />אנא פנה למנהל לקבלת הגישה.
+        </p>
+      </div>
+    </Screen>
+  );
+}
+
+function Register({ onRegister }) {
+  const [name, setName] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const submit = async () => {
+    if (!name.trim()) return;
+    setLoading(true);
+    await onRegister(name.trim());
+  };
+
+  return (
+    <Screen>
+      <div style={{
+        background: "rgba(255,255,255,0.07)", backdropFilter: "blur(20px)",
+        borderRadius: 28, padding: "48px 40px", maxWidth: 380, width: "90%",
+        border: "1px solid rgba(255,255,255,0.12)", boxShadow: "0 32px 64px rgba(0,0,0,0.4)",
+        textAlign: "center",
+      }}>
+        <div style={{ fontSize: 52, marginBottom: 20 }}>✨</div>
+        <h1 style={{ color: "#fff", fontSize: 26, fontWeight: 800, margin: "0 0 8px" }}>
+          ברוך הבא!
+        </h1>
+        <p style={{ color: "rgba(255,255,255,0.55)", marginBottom: 32, lineHeight: 1.6 }}>
+          הכנס את שמך כדי להתחיל את המסע שלך
+        </p>
+        <input
+          value={name}
+          onChange={e => setName(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && submit()}
+          placeholder="השם שלך..."
+          style={{
+            width: "100%", boxSizing: "border-box",
+            padding: "14px 18px", borderRadius: 14, border: "1px solid rgba(255,255,255,0.2)",
+            background: "rgba(255,255,255,0.1)", color: "#fff", fontSize: 16,
+            outline: "none", marginBottom: 16, textAlign: "right",
+            caretColor: "#a78bfa",
+          }}
+          dir="rtl"
+          autoFocus
+        />
+        <button
+          onClick={submit}
+          disabled={loading || !name.trim()}
+          style={{
+            width: "100%", padding: "14px", borderRadius: 14,
+            background: name.trim() ? "linear-gradient(135deg, #a78bfa, #7c3aed)" : "rgba(255,255,255,0.1)",
+            border: "none", color: "#fff", fontSize: 16, fontWeight: 700,
+            cursor: name.trim() ? "pointer" : "not-allowed",
+            transition: "all 0.2s",
+          }}
+        >
+          {loading ? "⏳" : "בואנו! →"}
+        </button>
+      </div>
+    </Screen>
+  );
+}
+
+function Tasks({ user, tasks, completed, onToggle }) {
+  const today = new Date().toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long" });
+  const doneCount = tasks.filter(t => completed[t.id]).length;
+  const pct = tasks.length ? Math.round((doneCount / tasks.length) * 100) : 0;
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "linear-gradient(160deg, #0f0c29 0%, #302b63 50%, #24243e 100%)",
+      display: "flex", flexDirection: "column", alignItems: "center",
+      padding: "32px 16px", fontFamily: "'Segoe UI', Tahoma, sans-serif",
+    }}>
+      <div style={{ width: "100%", maxWidth: 440 }}>
+        {/* Header */}
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <p style={{ color: "rgba(255,255,255,0.5)", margin: "0 0 6px", fontSize: 13 }}>{today}</p>
+          <h1 style={{ color: "#fff", fontSize: 24, fontWeight: 800, margin: "0 0 4px" }}>
+            שלום, {user?.name} 👋
+          </h1>
+          <p style={{ color: "rgba(255,255,255,0.5)", margin: 0, fontSize: 14 }}>
+            {doneCount}/{tasks.length} משימות הושלמו
+          </p>
+        </div>
+
+        {/* Progress */}
+        <div style={{
+          background: "rgba(255,255,255,0.08)", borderRadius: 100,
+          height: 8, marginBottom: 28, overflow: "hidden",
+        }}>
+          <div style={{
+            height: "100%", width: `${pct}%`,
+            background: "linear-gradient(90deg, #a78bfa, #7c3aed)",
+            borderRadius: 100, transition: "width 0.6s cubic-bezier(0.34,1.56,0.64,1)",
+          }} />
+        </div>
+
+        {/* Tasks */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {tasks.map((task, i) => (
+            <TaskCard
+              key={task.id}
+              task={task}
+              done={!!completed[task.id]}
+              onToggle={() => onToggle(task.id)}
+              delay={i * 60}
+            />
+          ))}
+        </div>
+
+        {/* Footer */}
+        <p style={{ textAlign: "center", color: "rgba(255,255,255,0.25)", fontSize: 12, marginTop: 40 }}>
+          ניתן להוסיף כווידג'ט דרך תפריט הדפדפן → "הוסף למסך הבית"
+        </p>
+      </div>
+
+      <style>{`
+        @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes fadeInUp { from { opacity:0; transform:translateY(20px); } to { opacity:1; transform:translateY(0); } }
+      `}</style>
+    </div>
+  );
+}
+
+function TaskCard({ task, done, onToggle, delay }) {
+  return (
+    <div
+      onClick={onToggle}
+      style={{
+        display: "flex", alignItems: "center", gap: 16,
+        padding: "16px 20px", borderRadius: 18,
+        background: done ? "rgba(124,58,237,0.25)" : "rgba(255,255,255,0.07)",
+        border: done ? "1px solid rgba(167,139,250,0.4)" : "1px solid rgba(255,255,255,0.08)",
+        cursor: "pointer", transition: "all 0.2s",
+        animation: `fadeInUp 0.4s ease ${delay}ms both`,
+        direction: "rtl",
+      }}
+    >
+      <div style={{
+        width: 26, height: 26, borderRadius: "50%", flexShrink: 0,
+        border: done ? "none" : "2px solid rgba(255,255,255,0.3)",
+        background: done ? "linear-gradient(135deg, #a78bfa, #7c3aed)" : "transparent",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        transition: "all 0.2s",
+      }}>
+        {done && <span style={{ color: "#fff", fontSize: 14 }}>✓</span>}
+      </div>
+      <span style={{
+        color: done ? "rgba(255,255,255,0.5)" : "#fff",
+        fontSize: 15, fontWeight: 500,
+        textDecoration: done ? "line-through" : "none",
+        transition: "all 0.2s",
+      }}>
+        {task.text}
+      </span>
+    </div>
+  );
+}
+
+function Encourage({ message, onClose }) {
+  return (
+    <Screen>
+      <div style={{
+        textAlign: "center", maxWidth: 380, padding: "48px 40px",
+        background: "rgba(124,58,237,0.2)", backdropFilter: "blur(20px)",
+        borderRadius: 28, border: "1px solid rgba(167,139,250,0.3)",
+        animation: "fadeInUp 0.5s ease",
+      }}>
+        <div style={{ fontSize: 72, marginBottom: 24, animation: "bounce 1s infinite" }}>🎊</div>
+        <h2 style={{ color: "#fff", fontSize: 22, fontWeight: 800, margin: "0 0 16px", lineHeight: 1.4 }}>
+          {message}
+        </h2>
+        <p style={{ color: "rgba(255,255,255,0.55)", marginBottom: 32, lineHeight: 1.6 }}>
+          השלמת את כל המשימות להיום! <br />
+          כל הכבוד על ההתמדה 💪
+        </p>
+        <button
+          onClick={onClose}
+          style={{
+            padding: "14px 40px", borderRadius: 14,
+            background: "linear-gradient(135deg, #a78bfa, #7c3aed)",
+            border: "none", color: "#fff", fontSize: 16, fontWeight: 700,
+            cursor: "pointer",
+          }}
+        >
+          תודה! 🙏
+        </button>
+      </div>
+      <style>{`@keyframes bounce { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }`}</style>
+    </Screen>
+  );
+}
+
+// ─── Admin Panel ───────────────────────────────────────────────────────────────
+function Admin({ tasks, setTasks, encouragements, setEncouragements, activityLog, onSave }) {
+  const [tab, setTab] = useState("tasks");
+  const [newTask, setNewTask] = useState("");
+  const [newEnc, setNewEnc] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  const save = async () => {
+    await onSave(tasks, encouragements);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const addTask = () => {
+    if (!newTask.trim()) return;
+    const updated = [...tasks, { id: Date.now(), text: newTask.trim() }];
+    setTasks(updated);
+    setNewTask("");
+  };
+
+  const removeTask = (id) => setTasks(tasks.filter(t => t.id !== id));
+  const addEnc = () => {
+    if (!newEnc.trim()) return;
+    setEncouragements([...encouragements, newEnc.trim()]);
+    setNewEnc("");
+  };
+  const removeEnc = (i) => setEncouragements(encouragements.filter((_, idx) => idx !== i));
+
+  const stats = {
+    registers: activityLog.filter(e => e.type === "register").length,
+    completions: activityLog.filter(e => e.type === "completed").length,
+    recent: activityLog.slice(-8).reverse(),
+  };
+
+  const tabStyle = (t) => ({
+    padding: "10px 20px", borderRadius: 10, border: "none", cursor: "pointer", fontWeight: 600,
+    background: tab === t ? "linear-gradient(135deg,#a78bfa,#7c3aed)" : "rgba(255,255,255,0.08)",
+    color: "#fff", fontSize: 14, transition: "all 0.2s",
+  });
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "linear-gradient(160deg,#0f0c29,#302b63,#24243e)",
+      padding: "32px 16px", fontFamily: "'Segoe UI', Tahoma, sans-serif",
+    }}>
+      <div style={{ maxWidth: 600, margin: "0 auto" }}>
+        <h1 style={{ color: "#fff", fontSize: 22, fontWeight: 800, textAlign: "center", marginBottom: 8 }}>
+          🛠 אזור שליטה
+        </h1>
+        <p style={{ color: "rgba(255,255,255,0.4)", textAlign: "center", marginBottom: 28, fontSize: 13 }}>
+          ניהול תוכן ומעקב פעילות
+        </p>
+
+        {/* Tabs */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 24, justifyContent: "center" }}>
+          <button style={tabStyle("tasks")} onClick={() => setTab("tasks")}>משימות</button>
+          <button style={tabStyle("encourage")} onClick={() => setTab("encourage")}>עידוד</button>
+          <button style={tabStyle("stats")} onClick={() => setTab("stats")}>סטטיסטיקות</button>
+        </div>
+
+        <div style={{
+          background: "rgba(255,255,255,0.07)", borderRadius: 20,
+          padding: 24, border: "1px solid rgba(255,255,255,0.1)",
+        }}>
+          {/* Tasks Tab */}
+          {tab === "tasks" && (
+            <div>
+              <h3 style={{ color: "#fff", margin: "0 0 16px", fontSize: 16 }}>משימות יומיות</h3>
+              <div style={{ display: "flex", gap: 8, marginBottom: 16, direction: "rtl" }}>
+                <input
+                  value={newTask} onChange={e => setNewTask(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && addTask()}
+                  placeholder="משימה חדשה..."
+                  style={{
+                    flex: 1, padding: "10px 14px", borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.2)",
+                    background: "rgba(255,255,255,0.1)", color: "#fff", fontSize: 14, outline: "none",
+                  }}
+                  dir="rtl"
+                />
+                <button onClick={addTask} style={{
+                  padding: "10px 16px", borderRadius: 10,
+                  background: "linear-gradient(135deg,#a78bfa,#7c3aed)",
+                  border: "none", color: "#fff", fontWeight: 700, cursor: "pointer",
+                }}>+ הוסף</button>
+              </div>
+              {tasks.map(t => (
+                <div key={t.id} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "10px 14px", background: "rgba(255,255,255,0.05)",
+                  borderRadius: 10, marginBottom: 8, direction: "rtl",
+                }}>
+                  <span style={{ color: "#fff", fontSize: 14 }}>{t.text}</span>
+                  <button onClick={() => removeTask(t.id)} style={{
+                    background: "rgba(255,80,80,0.2)", border: "none", color: "#ff6b6b",
+                    borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12,
+                  }}>הסר</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Encouragements Tab */}
+          {tab === "encourage" && (
+            <div>
+              <h3 style={{ color: "#fff", margin: "0 0 16px", fontSize: 16 }}>הודעות עידוד</h3>
+              <div style={{ display: "flex", gap: 8, marginBottom: 16, direction: "rtl" }}>
+                <input
+                  value={newEnc} onChange={e => setNewEnc(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && addEnc()}
+                  placeholder="הודעת עידוד חדשה..."
+                  style={{
+                    flex: 1, padding: "10px 14px", borderRadius: 10,
+                    border: "1px solid rgba(255,255,255,0.2)",
+                    background: "rgba(255,255,255,0.1)", color: "#fff", fontSize: 14, outline: "none",
+                  }}
+                  dir="rtl"
+                />
+                <button onClick={addEnc} style={{
+                  padding: "10px 16px", borderRadius: 10,
+                  background: "linear-gradient(135deg,#a78bfa,#7c3aed)",
+                  border: "none", color: "#fff", fontWeight: 700, cursor: "pointer",
+                }}>+ הוסף</button>
+              </div>
+              {encouragements.map((e, i) => (
+                <div key={i} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "10px 14px", background: "rgba(255,255,255,0.05)",
+                  borderRadius: 10, marginBottom: 8, direction: "rtl",
+                }}>
+                  <span style={{ color: "#fff", fontSize: 14 }}>{e}</span>
+                  <button onClick={() => removeEnc(i)} style={{
+                    background: "rgba(255,80,80,0.2)", border: "none", color: "#ff6b6b",
+                    borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12,
+                  }}>הסר</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Stats Tab */}
+          {tab === "stats" && (
+            <div>
+              <h3 style={{ color: "#fff", margin: "0 0 20px", fontSize: 16 }}>סיכום פעילות</h3>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 24 }}>
+                <StatCard label="הרשמות" value={stats.registers} icon="👥" />
+                <StatCard label="השלמות יומיות" value={stats.completions} icon="✅" />
+              </div>
+              <h4 style={{ color: "rgba(255,255,255,0.6)", margin: "0 0 12px", fontSize: 13 }}>
+                פעילות אחרונה
+              </h4>
+              {stats.recent.length === 0 && (
+                <p style={{ color: "rgba(255,255,255,0.3)", fontSize: 13 }}>אין פעילות עדיין</p>
+              )}
+              {stats.recent.map((e, i) => (
+                <div key={i} style={{
+                  display: "flex", justifyContent: "space-between",
+                  padding: "8px 12px", borderRadius: 8, marginBottom: 6,
+                  background: "rgba(255,255,255,0.04)", direction: "rtl",
+                }}>
+                  <span style={{ color: "#fff", fontSize: 13 }}>
+                    {e.type === "register" ? "🆕" : "✅"} {e.name}
+                  </span>
+                  <span style={{ color: "rgba(255,255,255,0.35)", fontSize: 11 }}>
+                    {new Date(e.date).toLocaleDateString("he-IL")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Save button for tasks/encourage tabs */}
+        {tab !== "stats" && (
+          <button onClick={save} style={{
+            display: "block", width: "100%", marginTop: 16,
+            padding: "14px", borderRadius: 14,
+            background: saved ? "rgba(74,222,128,0.3)" : "linear-gradient(135deg,#a78bfa,#7c3aed)",
+            border: saved ? "1px solid #4ade80" : "none",
+            color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer",
+            transition: "all 0.3s",
+          }}>
+            {saved ? "✓ נשמר!" : "💾 שמור שינויים"}
+          </button>
+        )}
+
+        {/* Token info */}
+        <div style={{
+          marginTop: 24, padding: 16, borderRadius: 14,
+          background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+        }}>
+          <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 12, margin: 0, textAlign: "center", lineHeight: 1.8 }} dir="rtl">
+            🔗 קישור למשתמשים: <code style={{ color: "#a78bfa" }}>?token=daily2025</code><br />
+            🛠 קישור לניהול: <code style={{ color: "#a78bfa" }}>?token=admin2025</code>
+          </p>
+        </div>
+      </div>
+
+      <style>{`@keyframes fadeInUp { from{opacity:0;transform:translateY(16px)} to{opacity:1;transform:translateY(0)} }`}</style>
+    </div>
+  );
+}
+
+function StatCard({ label, value, icon }) {
+  return (
+    <div style={{
+      background: "rgba(167,139,250,0.15)", borderRadius: 14,
+      padding: "20px 16px", textAlign: "center",
+      border: "1px solid rgba(167,139,250,0.2)",
+    }}>
+      <div style={{ fontSize: 28, marginBottom: 8 }}>{icon}</div>
+      <div style={{ color: "#fff", fontSize: 28, fontWeight: 800 }}>{value}</div>
+      <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 12, marginTop: 4 }}>{label}</div>
+    </div>
+  );
+}
+npm create vite@latest
